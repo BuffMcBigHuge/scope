@@ -1,8 +1,13 @@
 import logging
+import os
 import time
+from pathlib import Path
 
 import torch
 
+from download_models import download_hf_single_file
+
+from ..base.wan2_1.lightvae_wrapper import LightVAEWrapper
 from ..base.wan2_1.wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 from ..blending import PromptBlender, handle_transition_prepare
 from ..interface import Pipeline, Requirements
@@ -24,6 +29,8 @@ class LongLivePipeline(Pipeline):
         generator_path = getattr(config, "generator_path", None)
         lora_path = getattr(config, "lora_path", None)
         text_encoder_path = getattr(config, "text_encoder_path", None)
+        vae_path = getattr(config, "vae_path", None)
+        vae_impl = getattr(config, "vae_impl", "wan")
 
         # Load diffusion model
         start = time.time()
@@ -57,9 +64,39 @@ class LongLivePipeline(Pipeline):
         )
         print(f"Loaded text encoder in {time.time() - start:3f}s")
 
+        # Validate vae_impl
+        if vae_impl not in ["wan", "lightvae"]:
+            raise ValueError(
+                f"LongLivePipeline: vae_impl must be 'wan' or 'lightvae', got '{vae_impl}'"
+            )
+
+        # Auto-download VAE only if a path is provided in config and file is missing
+        if vae_path is not None:
+            vae_file = Path(os.path.expanduser(vae_path))
+            if not vae_file.exists():
+                repo_id = "lightx2v/Autoencoders"
+                filename = os.path.basename(vae_path)
+                dst_dir = vae_file.parent
+                print(
+                    f"LongLivePipeline: downloading VAE '{filename}' from {repo_id} to '{dst_dir}'"
+                )
+                download_hf_single_file(
+                    repo_id=repo_id, filename=filename, local_dir=dst_dir
+                )
+            vae_path = str(vae_file)
+
+        # Instantiate the appropriate VAE wrapper based on vae_impl
         start = time.time()
-        vae = WanVAEWrapper(model_dir=model_dir)
-        print(f"Loaded VAE in {time.time() - start:.3f}s")
+        if vae_impl == "lightvae":
+            if vae_path is None:
+                raise ValueError(
+                    "LongLivePipeline: vae_path must be provided when vae_impl='lightvae'"
+                )
+            vae = LightVAEWrapper(vae_path=vae_path)
+            print(f"Loaded LightVAE in {time.time() - start:.3f}s")
+        else:
+            vae = WanVAEWrapper(model_dir=model_dir, vae_path=vae_path)
+            print(f"Loaded WanVAE in {time.time() - start:.3f}s")
 
         seed = getattr(config, "seed", 42)
 
